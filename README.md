@@ -36,7 +36,7 @@ We use GitHub Actions to automatically build executable files. You don't need to
    ```
    *(Note: For rarfile to work, you may need to have WinRAR or unrar installed on your system PATH).*
 
-   ```
+  
  3. **Run the server:**
    ```bash
    python app.py
