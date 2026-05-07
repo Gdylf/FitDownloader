@@ -1,5 +1,3 @@
-
-import httpx
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template_string, request, url_for, session, redirect, jsonify
@@ -22,7 +20,6 @@ app = Flask(__name__)
 app.secret_key = "fit_downloader_secret_key"
 
 # --- GLOBALNY MENEDŻER POBIERANIA ---
-# Przechowuje statusy pobierania dla poszczególnych URLi gier
 DOWNLOAD_TASKS = {}
 DOWNLOAD_DIR = "FitDownloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -88,9 +85,8 @@ def get_labels(lang):
 # --- SKRYPTY POBIERANIA ---
 
 def get_rutor_link(url):
-    """Zwraca bezpośredni link do pliku .torrent na podstawie linku RuTor"""
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -109,7 +105,7 @@ def get_rutor_link(url):
 
 def extract_fuckingfast_links(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
     try:
@@ -131,7 +127,7 @@ def extract_direct_link(html_content):
 
 def get_page_source(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Referer': 'https://fuckingfast.co/'
     }
     try:
@@ -258,7 +254,7 @@ def download_worker(game_url, game_title, game_image=None):
                     with rarfile.RarFile(part1) as rf:
                         rf.extractall(path=game_files_dir)
                     
-                    # --- NOWOŚĆ: Usuwanie plików po rozpakowaniu ---
+                    # Czyszczenie archiwów
                     task['speed'] = 'Czyszczenie...'
                     for file_path in downloaded_paths:
                         try:
@@ -280,14 +276,12 @@ def download_worker(game_url, game_title, game_image=None):
             task['status'] = 'downloading'
             task['speed'] = '0.0 MB/s'
             
-            # Pobieranie samego pliku metadanych .torrent
             torrent_path = os.path.join(target_folder, "game.torrent")
             tr = requests.get(rutor_link, headers={'User-Agent': 'Mozilla/5.0'})
             tr.raise_for_status()
             with open(torrent_path, 'wb') as f:
                 f.write(tr.content)
                 
-            # Inicjalizacja sesji libtorrent
             ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
             info = lt.torrent_info(torrent_path)
             
@@ -300,13 +294,11 @@ def download_worker(game_url, game_title, game_image=None):
             
             was_paused = False
             
-            # Pętla nasłuchująca statusu torrenta
             while not handle.status().is_seeding:
                 if task['cancel_flag']:
                     ses.remove_torrent(handle)
                     return
                 
-                # Obsługa pauzy z poziomu aplikacji (wstrzymuje torrent fizycznie)
                 while task['pause_flag']:
                     task['status'] = 'paused'
                     task['speed'] = '0.0 MB/s'
@@ -318,7 +310,6 @@ def download_worker(game_url, game_title, game_image=None):
                         ses.remove_torrent(handle)
                         return
                         
-                # Wznowienie, jeśli uprzednio spauzowano
                 if was_paused:
                     handle.resume()
                     was_paused = False
@@ -332,7 +323,6 @@ def download_worker(game_url, game_title, game_image=None):
                 
                 time.sleep(1)
                 
-            # Pobieranie Torrent ukończone - ujednolicenie folderu do Game_Files
             ses.remove_torrent(handle)
             torrent_root_dir = os.path.join(target_folder, info.name())
             
@@ -378,23 +368,31 @@ def clean_spam(val):
 def get_fast_links(query):
     query = query.strip()
     url = "https://fitgirl-repacks.site/"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
     try:
-        with httpx.Client(http2=True, timeout=10.0) as client:
-            response = client.get(url, params={'s': query})
-            soup = BeautifulSoup(response.text, 'html.parser')
-            links = []
-            for article in soup.find_all('article')[:8]:
-                title_tag = article.find('h1', class_='entry-title')
-                if title_tag and title_tag.find('a'):
-                    title = title_tag.get_text(strip=True)
-                    if not any(x in title for x in ["Updates Digest", "Updates List", "Monthly"]):
-                        links.append({"title": title, "url": title_tag.find('a')['href']})
-            return links
-    except: return []
+        response = requests.get(url, params={'s': query}, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        links = []
+        for article in soup.find_all('article')[:8]:
+            title_tag = article.find('h1', class_='entry-title')
+            if title_tag and title_tag.find('a'):
+                title = title_tag.get_text(strip=True)
+                # Omijamy wpisy typu 'Updates Digest'
+                if not any(x in title.lower() for x in ["updates digest", "updates list", "monthly"]):
+                    links.append({"title": title, "url": title_tag.find('a')['href']})
+        return links
+    except Exception as e: 
+        print(f"Error fetching links: {e}")
+        return []
 
 def get_game_details(url, target_lang):
     try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
         soup = BeautifulSoup(response.text, 'html.parser')
         
         full_title = soup.find("meta", property="og:title")["content"]
@@ -404,13 +402,13 @@ def get_game_details(url, target_lang):
         if title_sub.lower().endswith("fitgirl repacks"):
             title_sub = title_sub[:-15].strip(" -")
             
-        image_url = soup.find("meta", property="og:image")["content"]
+        img_meta = soup.find("meta", property="og:image")
+        image_url = img_meta["content"] if img_meta else ""
 
         info_parts = []
         labels = get_labels(target_lang)
         entry_content = soup.find("div", class_="entry-content")
         
-        # Detekcja dostępnych form pobierania w celu sterowania przyciskiem
         has_ff = bool(soup.find('a', href=re.compile(r'fuckingfast\.co', re.I)))
         has_torrent = False
         rutor_tag = soup.find('a', href=re.compile(r'rutor\.info'))
@@ -436,7 +434,6 @@ def get_game_details(url, target_lang):
                                     info_parts.append({"key": label_pl, "val": v})
                     break
 
-        # Pobieranie opisu gry
         description = "Brak opisu."
         for spoiler in soup.find_all("div", class_="su-spoiler"):
             title_div = spoiler.find("div", class_="su-spoiler-title")
@@ -445,7 +442,6 @@ def get_game_details(url, target_lang):
                 description = translate_text(content.split("Game Features")[0].strip(), target_lang)
                 break
                 
-        # Pobieranie dodatkowej zawartości (Updates) z FitGirl Page
         updates = []
         update_header = soup.find(string=re.compile(r'Game Updates', re.I))
         if update_header:
@@ -468,7 +464,6 @@ def get_game_details(url, target_lang):
 
 # --- API KOMENTARZY (TOLSTOY) ---
 def get_current_ticks():
-    # 621355968000000000 to offset dla Unix Epoch
     return (int(time.time()) * 10000000) + 621355968000000000
 
 @app.route('/api/comments')
@@ -504,7 +499,6 @@ def api_comments():
         data = resp.json().get("data", {})
         comments_out = []
         
-        # Przypięty komentarz - dołączany tylko przy pierwszym ładowaniu (gdy nie ma podanego page)
         fixed = data.get("chat", {}).get("fixed_comment")
         if fixed and not request.args.get('page'):
             comments_out.append({
@@ -706,7 +700,7 @@ HTML_TEMPLATE = """
         .progress-bar { background: linear-gradient(90deg, #00a2ff, #0055ff); transition: width 0.3s ease; font-weight: bold; }
         .btn-dl { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; border: none; padding: 12px 30px; border-radius: 12px; font-weight: 800; font-size: 1.1rem; width: 100%; transition: 0.3s; }
         .btn-dl:hover { transform: scale(1.02); color: white; }
-        .btn-ctrl { background: #333; border: none; color: white; padding: 8px 20px; border-radius: 8px; font-weight: 600; margin-right: 10px; }
+        .btn-ctrl { background: #333; border: none; color: white; padding: 8px 20px; border-radius: 8px; font-weight: 600; margin-right: 10px; flex: 1; }
         .btn-ctrl:hover { background: #444; }
         .btn-danger { background: #ef4444; } .btn-danger:hover { background: #dc2626; }
         .btn-warning { background: #f59e0b; color: black; } .btn-warning:hover { background: #d97706; }
@@ -718,6 +712,25 @@ HTML_TEMPLATE = """
         .pinned-comment { border-color: #d32f2f; background: rgba(211, 47, 47, 0.05); }
         .comment-reply { margin-top: 10px; padding-left: 15px; border-left: 3px solid #444; background: #111; padding: 10px; border-radius: 6px; font-size: 0.85rem; color: #aaa; }
         .text-accent { color: var(--accent); }
+
+        /* --- RESPONSIVE MOBILE STYLES --- */
+        @media (max-width: 768px) {
+            .navbar .container { flex-wrap: wrap; gap: 10px; }
+            .navbar-brand { font-size: 1.4rem; flex: 1; }
+            .lang-switcher { flex: 0; white-space: nowrap; }
+            .search-box { order: 3; max-width: 100%; margin: 5px 0 0 0 !important; }
+            
+            .card-img-wrapper { height: 250px; }
+            .display-5 { font-size: 2rem; }
+            .desc-box { padding: 15px; font-size: 0.9rem; }
+            .info-row { padding: 10px 15px; }
+            
+            .btn-dl, .btn-install { font-size: 1rem; padding: 10px 20px; }
+            .dl-panel { padding: 15px; margin-top: 15px; }
+            .row.g-5 { --bs-gutter-y: 2rem; --bs-gutter-x: 1rem; }
+            
+            .comment-box { padding: 12px; font-size: 0.9rem; }
+        }
     </style>
 </head>
 <body>
@@ -725,7 +738,8 @@ HTML_TEMPLATE = """
 <nav class="navbar sticky-top">
     <div class="container d-flex justify-content-between align-items-center">
         <a class="navbar-brand" href="/">FIT<span class="brand-blue">DOWNLOADER</span></a>
-        <form class="search-box mx-3" action="/search" method="get">
+        <!-- Wyszukiwarka z dostosowanymi klasami margin dla responsywności -->
+        <form class="search-box mx-md-3 my-2 my-md-0" action="/search" method="get">
             <input class="search-input" type="search" name="q" placeholder="{{ labels.search_placeholder }}" required value="{{ query or '' }}">
             <button class="search-btn" type="submit">🔍</button>
         </form>
@@ -748,10 +762,11 @@ HTML_TEMPLATE = """
             <p class="mt-2 text-muted">{{ labels.loading }}</p>
         </div>
     {% elif game %}
-        <div class="mt-5">
-            <div class="row g-5">
+        <div class="mt-4 mt-md-5">
+            <!-- Dostosowane gap dla urządzeń mobilnych vs desktop -->
+            <div class="row g-4 g-lg-5">
                 <div class="col-lg-4">
-                    <img src="{{ game.image }}" class="w-100 rounded-4 shadow" alt="Poster" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'">
+                    <img src="{{ game.image }}" class="w-100 rounded-4 shadow" alt="Poster" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki'">
                     
                     <!-- DOWNLOADER PANEL -->
                     <div class="dl-panel shadow" id="dl-panel">
@@ -771,9 +786,9 @@ HTML_TEMPLATE = """
                                 <div id="dl-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
                             </div>
                             
-                            <div class="d-flex justify-content-between mt-3" id="dl-controls">
-                                <button class="btn-ctrl btn-warning" id="btn-pause" onclick="pauseDownload()">{{ labels.btn_pause }}</button>
-                                <button class="btn-ctrl btn-danger" id="btn-stop" onclick="stopDownload()">{{ labels.btn_stop }}</button>
+                            <div class="d-flex justify-content-between mt-3 gap-2" id="dl-controls">
+                                <button class="btn-ctrl btn-warning m-0" id="btn-pause" onclick="pauseDownload()">{{ labels.btn_pause }}</button>
+                                <button class="btn-ctrl btn-danger m-0" id="btn-stop" onclick="stopDownload()">{{ labels.btn_stop }}</button>
                             </div>
                             
                             <button class="btn-install mt-3" id="btn-install" style="display: none;" onclick="installGame()">🎮 {{ labels.btn_install }}</button>
@@ -812,7 +827,7 @@ HTML_TEMPLATE = """
                         <div id="updates-list" style="display: none;" class="mt-2 p-3 border border-secondary rounded-3" style="background: #111;">
                             <ul class="list-unstyled mb-0">
                                 {% for upd in game.updates %}
-                                <li class="mb-2"><a href="{{ upd.url }}" target="_blank" class="text-info text-decoration-none fw-bold">⯈ {{ upd.name }}</a></li>
+                                <li class="mb-2"><a href="{{ upd.url }}" target="_blank" class="text-info text-decoration-none fw-bold" style="word-break: break-all;">⯈ {{ upd.name }}</a></li>
                                 {% endfor %}
                             </ul>
                         </div>
@@ -843,18 +858,30 @@ HTML_TEMPLATE = """
         try {
             const res = await fetch(`/api/game_preview?url=${encodeURIComponent(item.url)}`);
             const data = await res.json();
-            if (data && data.image) {
-                const card = document.createElement('div');
-                card.className = 'game-card';
-                card.innerHTML = `
-                    <div class="card-img-wrapper"><img src="${data.image}" class="card-img" alt="Okładka" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'"></div>
-                    <div class="card-content">
-                        <h5 class="card-title">${item.title}</h5>
-                        <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
-                    </div>`;
-                container.appendChild(card);
-            }
-        } catch (e) { console.error(e); }
+            const imgSrc = (data && data.image) ? data.image : 'https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki';
+            
+            const card = document.createElement('div');
+            card.className = 'game-card';
+            card.innerHTML = `
+                <div class="card-img-wrapper"><img src="${imgSrc}" class="card-img" alt="Okładka" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'"></div>
+                <div class="card-content">
+                    <h5 class="card-title">${item.title}</h5>
+                    <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
+                </div>`;
+            container.appendChild(card);
+        } catch (e) { 
+            console.error(e); 
+            // Fallback renderowania w razie zablokowania pobierania obrazka okładki
+            const card = document.createElement('div');
+            card.className = 'game-card';
+            card.innerHTML = `
+                <div class="card-img-wrapper"><img src="https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki" class="card-img" alt="Okładka"></div>
+                <div class="card-content">
+                    <h5 class="card-title">${item.title}</h5>
+                    <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
+                </div>`;
+            container.appendChild(card);
+        }
     }
 
     async function init() {
@@ -937,14 +964,12 @@ HTML_TEMPLATE = """
         }
     }
     
-    // Uruchamiamy pobranie pierwszej strony komentarzy przy wejściu w detale
     initComments();
 
     async function handleCommentsClick() {
         const stdContainer = document.getElementById('standard-comments-container');
         const btn = document.getElementById('btn-load-comments');
         
-        // Za pierwszym kliknięciem tylko pokaż rozwiniętą listę
         if (!standardCommentsVisible) {
             stdContainer.style.display = 'block';
             standardCommentsVisible = true;
@@ -956,7 +981,6 @@ HTML_TEMPLATE = """
             return;
         }
         
-        // Kolejne kliknięcia doładowują kolejne strony
         if (commentsLoading || !commentsPage) return;
         commentsLoading = true;
         btn.innerText = "{{ labels.loading }}";
@@ -1100,7 +1124,6 @@ HTML_TEMPLATE = """
                 uiSpeed.innerText = "";
                 if (uiProgressContainer) uiProgressContainer.style.display = 'none';
                 
-                // Dokładne usunięcie/ukrycie przycisków po zakończeniu
                 uiControls.style.display = 'none';
                 uiBtnPause.style.display = 'none';
                 uiBtnStop.style.display = 'none';
@@ -1185,7 +1208,3 @@ def details():
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
-
-
-
-
