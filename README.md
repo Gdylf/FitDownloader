@@ -1,3 +1,6 @@
+if you like what i do help me out!
+https://suppi.pl/kotpasztet
+
 # FitDownloader - Web-Based Repack Manager
 FitDownloader is a Python Flask web application designed as a Proof of Concept (PoC) for web scraping, asynchronous file downloading, and local torrent management. It provides a web interface to search for specific game repacks, view translated details, and download them automatically via HTTP or Torrent.
 ⚠️ **Disclaimer:** This project is created strictly for **educational purposes** to demonstrate web scraping, parsing HTML, interacting with APIs, and handling network streams in Python. The author does not condone piracy. Users are responsible for their own actions and ensuring they comply with local laws and copyrights.
