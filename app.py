@@ -17,7 +17,8 @@ import shlex
 import libtorrent as lt
 
 app = Flask(__name__)
-app.secret_key = "fit_downloader_secret_key"
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
+
 
 # --- GLOBALNY MENEDŻER POBIERANIA ---
 DOWNLOAD_TASKS = {}
