@@ -13,10 +13,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
+      - name: Setup Python 3.14
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.14"
+          allow-prereleases: true
 
       - name: Install dependencies
         run: |
@@ -24,7 +25,8 @@ jobs:
           pip install flask httpx requests beautifulsoup4 rarfile pyinstaller
 
       - name: Install libtorrent
-        run: pip install python-libtorrent
+        run: |
+          pip install libtorrent
         continue-on-error: true
 
       - name: Build EXE
@@ -49,7 +51,7 @@ jobs:
             --hidden-import bs4 `
             --hidden-import bs4.builder `
             --hidden-import rarfile `
-            --hidden-import libtorrent `
+            --collect-all libtorrent `
             --hidden-import threading `
             --hidden-import webbrowser `
             --name FitDownloader `
