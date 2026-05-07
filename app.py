@@ -1,3 +1,4 @@
+import httpx
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, render_template_string, request, url_for, session, redirect, jsonify
@@ -9,18 +10,17 @@ import threading
 import time
 import string
 import rarfile
-from urllib.parse import unquote, quote
+from urllib.parse import unquote
 import subprocess
 import sys
 import shutil
 import shlex
-import libtorrent as lt
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24))
-
+app.secret_key = "fit_downloader_secret_key"
 
 # --- GLOBALNY MENEDŻER POBIERANIA ---
+# Przechowuje statusy pobierania dla poszczególnych URLi gier
 DOWNLOAD_TASKS = {}
 DOWNLOAD_DIR = "FitDownloads"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -57,13 +57,10 @@ def get_labels(lang):
             'details_btn': 'Sprawdź detale', 'back_btn': 'Wróć', 'external_btn': 'Strona FitGirl',
             'results_for': 'Wyniki dla', 'welcome': 'Polecane gry', 'loading': 'Ładowanie gier...',
             'no_results': 'Nie znaleziono wyników.', 'download_btn': 'Pobierz Grę',
-            'dl_searching': 'Wyszukiwanie linków...', 'dl_paused': 'Wstrzymano',
+            'dl_searching': 'Wyszukiwanie linków FuckingFast...', 'dl_paused': 'Wstrzymano',
             'dl_extracting': 'Rozpakowywanie archiwów...', 'dl_finished': 'Zakończono pobieranie!',
             'btn_pause': 'Pauza', 'btn_resume': 'Wznów', 'btn_stop': 'Anuluj', 'btn_install': 'Zainstaluj (setup.exe)',
-            'dl_error': 'Wystąpił błąd', 'dl_part': 'Część',
-            'btn_dl_unavailable': 'Brak linków do pobrania', 'dl_method_torrent': 'Pobieranie przez Torrent...',
-            'updates_title': 'Dodatkowa zawartość (Updates / DLC)',
-            'comments_title': 'Dyskusja / Komentarze', 'load_comments': 'Pokaż komentarze', 'load_more': 'Załaduj starsze komentarze'
+            'dl_error': 'Wystąpił błąd', 'dl_part': 'Część'
         },
         'en': {
             'genres': 'Genres/Tags', 'company': 'Company', 'languages': 'Languages',
@@ -72,41 +69,19 @@ def get_labels(lang):
             'details_btn': 'Check details', 'back_btn': 'Back', 'external_btn': 'FitGirl Page',
             'results_for': 'Results for', 'welcome': 'Featured Games', 'loading': 'Loading games...',
             'no_results': 'No results found.', 'download_btn': 'Download Game',
-            'dl_searching': 'Searching for links...', 'dl_paused': 'Paused',
+            'dl_searching': 'Searching FuckingFast links...', 'dl_paused': 'Paused',
             'dl_extracting': 'Extracting archives...', 'dl_finished': 'Download Finished!',
             'btn_pause': 'Pause', 'btn_resume': 'Resume', 'btn_stop': 'Cancel', 'btn_install': 'Install (setup.exe)',
-            'dl_error': 'Error occurred', 'dl_part': 'Part',
-            'btn_dl_unavailable': 'No download links', 'dl_method_torrent': 'Downloading via Torrent...',
-            'updates_title': 'Additional Content (Updates / DLC)',
-            'comments_title': 'Discussion / Comments', 'load_comments': 'Show comments', 'load_more': 'Load older comments'
+            'dl_error': 'Error occurred', 'dl_part': 'Part'
         }
     }
     return labels.get(lang, labels['pl'])
 
 # --- SKRYPTY POBIERANIA ---
 
-def get_rutor_link(url):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    try:
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        rutor_tag = soup.find('a', href=re.compile(r'rutor\.info'))
-        if rutor_tag:
-            original_link = rutor_tag['href']
-            match = re.search(r'/torrent/(\d+)', original_link)
-            if match:
-                return f"https://d.rutor.info/download/{match.group(1)}"
-    except Exception:
-        pass
-    return None
-
 def extract_fuckingfast_links(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     }
     try:
@@ -128,7 +103,7 @@ def extract_direct_link(html_content):
 
 def get_page_source(url):
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
         'Referer': 'https://fuckingfast.co/'
     }
     try:
@@ -144,212 +119,130 @@ def get_original_filename(url, response):
         if len(fname) > 0: return fname[0].strip('"')
     return unquote(os.path.basename(url.split('?')[0]))
 
-def download_worker(game_url, game_title, game_image=None):
-    """Główny wątek pobierania dla konkretnej gry (HTTP lub Torrent)"""
+def download_worker(game_url, game_title):
+    """Główny wątek pobierania dla konkretnej gry"""
     task = DOWNLOAD_TASKS[game_url]
     target_folder = os.path.join(DOWNLOAD_DIR, re.sub(r'[^a-zA-Z0-9]', '_', game_title))
-    game_files_dir = os.path.join(target_folder, "Game_Files")
     os.makedirs(target_folder, exist_ok=True)
     
     try:
+        # KROK 1: Linki
         task['status'] = 'searching'
         ff_links = extract_fuckingfast_links(game_url)
+        if not ff_links: raise Exception("Brak linków FuckingFast na stronie.")
         
-        # Opcja 1: Pobieranie przez FuckingFast (HTTP)
-        if ff_links:
-            task['method'] = 'http'
-            direct_links = []
-            for fl in ff_links:
-                if task['cancel_flag']: return
-                html = get_page_source(fl)
-                if html:
-                    dl = extract_direct_link(html)
-                    if dl: direct_links.append(dl)
-                    
-            if not direct_links: raise Exception("Nie udało się obejść FuckingFast.")
-            
-            task['total_parts'] = len(direct_links)
-            downloaded_paths = []
-            
-            # Pobieranie partów 
-            for index, dlink in enumerate(direct_links):
-                if task['cancel_flag']: return
-                task['current_part'] = index + 1
-                task['status'] = 'downloading'
-                task['speed'] = '0.0 MB/s'
-                
-                with requests.get(dlink, stream=True, allow_redirects=True, timeout=10) as r:
-                    orig_name = get_original_filename(dlink, r)
-                    if "-selective-" in orig_name.lower(): 
-                        continue
-                    ext = os.path.splitext(orig_name)[1]
-                    if not ext or len(ext) > 5: ext = ".rar"
-                    file_path = os.path.join(target_folder, f"part_{index+1}{ext}")
-                    total_size = int(r.headers.get('content-length', 0))
-                
-                headers = {}
-                downloaded_bytes = 0
-                if os.path.exists(file_path):
-                    downloaded_bytes = os.path.getsize(file_path)
-                    if total_size and downloaded_bytes >= total_size:
-                        downloaded_paths.append(file_path)
-                        task['progress'] = int(((index + 1) / task['total_parts']) * 100)
-                        continue
-                    else:
-                        headers['Range'] = f'bytes={downloaded_bytes}-'
-                        
-                with requests.get(dlink, headers=headers, stream=True, timeout=15) as r:
-                    mode = 'ab' if 'Range' in headers else 'wb'
-                    if r.status_code == 200: 
-                        mode = 'wb'
-                        downloaded_bytes = 0
-                    
-                    current_file_total = int(r.headers.get('content-length', 0)) + downloaded_bytes
-                    start_time = time.time()
-                    bytes_since_start = 0
-                    
-                    with open(file_path, mode) as f:
-                        for chunk in r.iter_content(chunk_size=65536):
-                            if task['cancel_flag']: return
-                            
-                            while task['pause_flag']:
-                                task['status'] = 'paused'
-                                task['speed'] = '0.0 MB/s'
-                                time.sleep(1)
-                                if task['cancel_flag']: return
-                                start_time = time.time()
-                                bytes_since_start = 0
-                                
-                            task['status'] = 'downloading'
-                            
-                            if chunk:
-                                f.write(chunk)
-                                downloaded_bytes += len(chunk)
-                                bytes_since_start += len(chunk)
-                                
-                                if current_file_total > 0:
-                                    part_progress = downloaded_bytes / current_file_total
-                                    task['progress'] = int(((index + part_progress) / task['total_parts']) * 100)
-                                
-                                elapsed = time.time() - start_time
-                                if elapsed > 1.0:
-                                    speed = bytes_since_start / elapsed / (1024 * 1024)
-                                    task['speed'] = f"{speed:.1f} MB/s"
-                                    start_time = time.time()
-                                    bytes_since_start = 0
-                                    
-                downloaded_paths.append(file_path)
-
+        direct_links = []
+        for fl in ff_links:
             if task['cancel_flag']: return
-
-            # Ekstrakcja dla HTTP
-            task['status'] = 'extracting'
-            task['progress'] = 100
-            task['speed'] = 'Rozpakowywanie...'
-            
-            part1 = next((f for f in downloaded_paths if "part_1.rar" in f), None)
-            
-            if part1:
-                os.makedirs(game_files_dir, exist_ok=True)
-                try:
-                    with rarfile.RarFile(part1) as rf:
-                        rf.extractall(path=game_files_dir)
-                    
-                    # Czyszczenie archiwów
-                    task['speed'] = 'Czyszczenie...'
-                    for file_path in downloaded_paths:
-                        try:
-                            if os.path.exists(file_path):
-                                os.remove(file_path)
-                        except Exception as e:
-                            print(f"Nie udało się usunąć {file_path}: {e}")
-                            
-                except Exception as e:
-                    pass
-
-        # Opcja 2: Pobieranie przez Torrent (Fallback, gdy brakuje FF)
-        else:
-            rutor_link = get_rutor_link(game_url)
-            if not rutor_link:
-                raise Exception("Brak dostępnych linków FuckingFast oraz RuTor.")
+            html = get_page_source(fl)
+            if html:
+                dl = extract_direct_link(html)
+                if dl: direct_links.append(dl)
                 
-            task['method'] = 'torrent'
+        if not direct_links: raise Exception("Nie udało się obejść FuckingFast.")
+        
+        task['total_parts'] = len(direct_links)
+        downloaded_paths = []
+        
+        # KROK 2: Pobieranie partów (Globalny Pasek Postępu)
+        for index, dlink in enumerate(direct_links):
+            if task['cancel_flag']: return
+            task['current_part'] = index + 1
             task['status'] = 'downloading'
             task['speed'] = '0.0 MB/s'
             
-            torrent_path = os.path.join(target_folder, "game.torrent")
-            tr = requests.get(rutor_link, headers={'User-Agent': 'Mozilla/5.0'})
-            tr.raise_for_status()
-            with open(torrent_path, 'wb') as f:
-                f.write(tr.content)
+            # Zapytanie wstępne (HEAD/STREAM) aby uzyskać rozmiar i nazwę
+            with requests.get(dlink, stream=True, allow_redirects=True, timeout=10) as r:
+                orig_name = get_original_filename(dlink, r)
+                if "-selective-" in orig_name.lower(): 
+                    continue # Pomijamy pliki selektywne
                 
-            ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
-            info = lt.torrent_info(torrent_path)
-            
-            params = {
-                'save_path': target_folder,
-                'storage_mode': lt.storage_mode_t(2),
-                'ti': info
-            }
-            handle = ses.add_torrent(params)
-            
-            was_paused = False
-            
-            while not handle.status().is_seeding:
-                if task['cancel_flag']:
-                    ses.remove_torrent(handle)
-                    return
+                ext = os.path.splitext(orig_name)[1]
+                if not ext or len(ext) > 5: ext = ".rar"
                 
-                while task['pause_flag']:
-                    task['status'] = 'paused'
-                    task['speed'] = '0.0 MB/s'
-                    if not was_paused:
-                        handle.pause()
-                        was_paused = True
-                    time.sleep(1)
-                    if task['cancel_flag']:
-                        ses.remove_torrent(handle)
-                        return
+                file_path = os.path.join(target_folder, f"part_{index+1}{ext}")
+                total_size = int(r.headers.get('content-length', 0))
+            
+            # WZNANWIANIE (RESUMING) POBIERANIA Z NAGŁÓWKIEM RANGE
+            headers = {}
+            downloaded_bytes = 0
+            if os.path.exists(file_path):
+                downloaded_bytes = os.path.getsize(file_path)
+                if total_size and downloaded_bytes >= total_size:
+                    downloaded_paths.append(file_path)
+                    task['progress'] = int(((index + 1) / task['total_parts']) * 100)
+                    continue # Plik już pobrany w całości
+                else:
+                    headers['Range'] = f'bytes={downloaded_bytes}-'
+                    
+            # Właściwe pobieranie z wznawianiem
+            with requests.get(dlink, headers=headers, stream=True, timeout=15) as r:
+                mode = 'ab' if 'Range' in headers else 'wb'
+                # Jeśli serwer przyjął Range, zwróci 206 Partial Content. W przeciwnym razie 200.
+                if r.status_code == 200: 
+                    mode = 'wb'
+                    downloaded_bytes = 0 # Serwer nie obsługuje wznawiania dla tego pliku
+                
+                current_file_total = int(r.headers.get('content-length', 0)) + downloaded_bytes
+                
+                start_time = time.time()
+                bytes_since_start = 0
+                
+                with open(file_path, mode) as f:
+                    for chunk in r.iter_content(chunk_size=65536): # 64KB chunks
+                        if task['cancel_flag']: return
                         
-                if was_paused:
-                    handle.resume()
-                    was_paused = False
-                    
-                task['status'] = 'downloading'
-                s = handle.status()
-                
-                task['progress'] = int(s.progress * 100)
-                speed_mb = s.download_rate / (1024 * 1024)
-                task['speed'] = f"{speed_mb:.1f} MB/s"
-                
-                time.sleep(1)
-                
-            ses.remove_torrent(handle)
-            torrent_root_dir = os.path.join(target_folder, info.name())
-            
-            if os.path.exists(torrent_root_dir):
-                if os.path.isfile(torrent_root_dir):
-                    os.makedirs(game_files_dir, exist_ok=True)
-                    shutil.move(torrent_root_dir, os.path.join(game_files_dir, info.name()))
-                elif os.path.isdir(torrent_root_dir) and os.path.abspath(torrent_root_dir) != os.path.abspath(game_files_dir):
-                    if os.path.exists(game_files_dir):
-                        shutil.rmtree(game_files_dir)
-                    shutil.move(torrent_root_dir, game_files_dir)
-                    
-        # --- WSPÓLNE ZAKOŃCZENIE (HTTP i Torrent) ---
+                        # Obsługa pauzy
+                        while task['pause_flag']:
+                            task['status'] = 'paused'
+                            task['speed'] = '0.0 MB/s'
+                            time.sleep(1)
+                            if task['cancel_flag']: return
+                            start_time = time.time()
+                            bytes_since_start = 0
+                            
+                        task['status'] = 'downloading'
+                        
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_bytes += len(chunk)
+                            bytes_since_start += len(chunk)
+                            
+                            # Obliczenie globalnego postępu (wszystkie party łącznie = 100%)
+                            if current_file_total > 0:
+                                part_progress = downloaded_bytes / current_file_total
+                                task['progress'] = int(((index + part_progress) / task['total_parts']) * 100)
+                            
+                            elapsed = time.time() - start_time
+                            if elapsed > 1.0:
+                                speed = bytes_since_start / elapsed / (1024 * 1024)
+                                task['speed'] = f"{speed:.1f} MB/s"
+                                start_time = time.time()
+                                bytes_since_start = 0
+                                
+            downloaded_paths.append(file_path)
+
+        if task['cancel_flag']: return
+
+        # KROK 3: Ekstrakcja
+        task['status'] = 'extracting'
         task['progress'] = 100
-        task['extract_path'] = game_files_dir
+        task['speed'] = 'Rozpakowywanie...'
         
-        # Pobieranie okładki do folderu Game_Files
-        if game_image:
+        part1 = next((f for f in downloaded_paths if "part_1.rar" in f), None)
+        extract_dir = os.path.join(target_folder, "Game_Files")
+        
+        if part1:
+            os.makedirs(extract_dir, exist_ok=True)
             try:
-                os.makedirs(game_files_dir, exist_ok=True)
-                img_resp = requests.get(game_image, timeout=10)
-                if img_resp.status_code == 200:
-                    with open(os.path.join(game_files_dir, "cover.png"), "wb") as f:
-                        f.write(img_resp.content)
+                with rarfile.RarFile(part1) as rf:
+                    rf.extractall(path=extract_dir)
+                task['extract_path'] = extract_dir
             except Exception as e:
-                print(f"Nie udało się pobrać okładki: {e}")
+                # Jeśli ekstrakcja z jakiegoś powodu padnie, traktujemy folder pobierania jako extract_path
+                task['extract_path'] = target_folder 
+        else:
+            task['extract_path'] = target_folder
 
         task['status'] = 'finished'
 
@@ -369,56 +262,30 @@ def clean_spam(val):
 def get_fast_links(query):
     query = query.strip()
     url = "https://fitgirl-repacks.site/"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
     try:
-        response = requests.get(url, params={'s': query}, headers=headers, timeout=15)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        links = []
-        for article in soup.find_all('article')[:8]:
-            title_tag = article.find('h1', class_='entry-title')
-            if title_tag and title_tag.find('a'):
-                title = title_tag.get_text(strip=True)
-                # Omijamy wpisy typu 'Updates Digest'
-                if not any(x in title.lower() for x in ["updates digest", "updates list", "monthly"]):
-                    links.append({"title": title, "url": title_tag.find('a')['href']})
-        return links
-    except Exception as e: 
-        print(f"Error fetching links: {e}")
-        return []
+        with httpx.Client(http2=True, timeout=10.0) as client:
+            response = client.get(url, params={'s': query})
+            soup = BeautifulSoup(response.text, 'html.parser')
+            links = []
+            for article in soup.find_all('article')[:8]:
+                title_tag = article.find('h1', class_='entry-title')
+                if title_tag and title_tag.find('a'):
+                    title = title_tag.get_text(strip=True)
+                    if not any(x in title for x in ["Updates Digest", "Updates List", "Monthly"]):
+                        links.append({"title": title, "url": title_tag.find('a')['href']})
+            return links
+    except: return []
 
 def get_game_details(url, target_lang):
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        response = requests.get(url, headers=headers, timeout=15)
-        response.raise_for_status()
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        full_title = soup.find("meta", property="og:title")["content"]
-        title_parts = full_title.split(' - ')
-        title = title_parts[0]
-        title_sub = " - ".join(title_parts[1:]) if len(title_parts) > 1 else ""
-        if title_sub.lower().endswith("fitgirl repacks"):
-            title_sub = title_sub[:-15].strip(" -")
-            
-        img_meta = soup.find("meta", property="og:image")
-        image_url = img_meta["content"] if img_meta else ""
+        title = soup.find("meta", property="og:title")["content"].split(' - ')[0]
+        image_url = soup.find("meta", property="og:image")["content"]
 
         info_parts = []
         labels = get_labels(target_lang)
         entry_content = soup.find("div", class_="entry-content")
-        
-        has_ff = bool(soup.find('a', href=re.compile(r'fuckingfast\.co', re.I)))
-        has_torrent = False
-        rutor_tag = soup.find('a', href=re.compile(r'rutor\.info'))
-        if rutor_tag and re.search(r'/torrent/(\d+)', rutor_tag['href']):
-            has_torrent = True
-            
-        dl_method = 'none'
-        if has_ff: dl_method = 'http'
-        elif has_torrent: dl_method = 'torrent'
         
         if entry_content:
             for p in entry_content.find_all("p"):
@@ -442,98 +309,9 @@ def get_game_details(url, target_lang):
                 content = spoiler.find("div", class_="su-spoiler-content").get_text(separator=" ", strip=True)
                 description = translate_text(content.split("Game Features")[0].strip(), target_lang)
                 break
-                
-        updates = []
-        update_header = soup.find(string=re.compile(r'Game Updates', re.I))
-        if update_header:
-            container = update_header.find_parent(['h3', 'div', 'p'])
-            if container:
-                next_div = container.find_next('div')
-                if next_div:
-                    for link in next_div.find_all('a', href=True):
-                        u_url = link['href']
-                        u_text = link.get_text(strip=True)
-                        if 'filecrypt' in u_url.lower() or 'update' in u_text.lower():
-                            updates.append({'name': u_text, 'url': u_url})
 
-        return {
-            "title": title, "title_sub": title_sub, "image": image_url, "info": info_parts, 
-            "desc": description, "url": url, "dl_method": dl_method,
-            "updates": updates
-        }
+        return {"title": title, "image": image_url, "info": info_parts, "desc": description, "url": url}
     except: return None
-
-# --- API KOMENTARZY (TOLSTOY) ---
-def get_current_ticks():
-    return (int(time.time()) * 10000000) + 621355968000000000
-
-@app.route('/api/comments')
-def api_comments():
-    target_url = request.args.get('url')
-    page_marker = request.args.get('page')
-    
-    if not page_marker or page_marker == 'null':
-        page_marker = str(get_current_ticks())
-        
-    app_id = "6289"
-    base_api = "https://web.tolstoycomments.com/api/chatpage/page"
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": f"https://web.tolstoycomments.com/widget/index.html?x={app_id}&p={quote(target_url)}",
-        "Accept": "*/*",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin"
-    }
-    
-    params = {
-        "siteid": app_id, "hash": "null", "url": target_url,
-        "down": "true", "sort": "1", "format": "1", "page": page_marker
-    }
-    
-    try:
-        resp = requests.get(base_api, params=params, headers=headers, timeout=10)
-        if resp.status_code == 404:
-            return jsonify({"comments": [], "next_page": None})
-        resp.raise_for_status()
-        
-        data = resp.json().get("data", {})
-        comments_out = []
-        
-        fixed = data.get("chat", {}).get("fixed_comment")
-        if fixed and not request.args.get('page'):
-            comments_out.append({
-                "user": fixed.get("user", {}).get("name", "ADMIN/PIN"),
-                "date": "",
-                "text": fixed.get("text_template", ""),
-                "is_pinned": True,
-                "reply": None
-            })
-            
-        for c in data.get("comments", []):
-            c_out = {
-                "user": c.get("user", {}).get("name", "Anonim"),
-                "date": c.get("data_create", ""),
-                "text": c.get("text_template", ""),
-                "is_pinned": False,
-                "reply": None
-            }
-            reply = c.get("answer_comment")
-            if reply:
-                c_out["reply"] = {
-                    "user": reply.get("user", {}).get("name", "Anonim"),
-                    "text": reply.get("text_template", "")
-                }
-            comments_out.append(c_out)
-            
-        next_page = None
-        if data.get("comments"):
-            next_page = data.get("comments")[-1].get("sort")
-            
-        return jsonify({"comments": comments_out, "next_page": next_page})
-    except Exception as e:
-        return jsonify({"error": str(e), "comments": []})
-
 
 # --- API POBIERANIA ---
 
@@ -542,15 +320,14 @@ def dl_start():
     data = request.json
     game_url = data.get('url')
     game_title = data.get('title')
-    game_image = data.get('image')
     
     if game_url not in DOWNLOAD_TASKS or DOWNLOAD_TASKS[game_url]['status'] in ['canceled', 'error']:
         DOWNLOAD_TASKS[game_url] = {
             'status': 'starting', 'progress': 0, 'speed': '0 MB/s',
             'current_part': 0, 'total_parts': 0, 'extract_path': '',
-            'cancel_flag': False, 'pause_flag': False, 'method': ''
+            'cancel_flag': False, 'pause_flag': False
         }
-        thread = threading.Thread(target=download_worker, args=(game_url, game_title, game_image))
+        thread = threading.Thread(target=download_worker, args=(game_url, game_title))
         thread.start()
         
     return jsonify({"success": True})
@@ -585,15 +362,15 @@ def dl_status():
     if url in DOWNLOAD_TASKS:
         return jsonify(DOWNLOAD_TASKS[url])
     
+    # Detekcja plików na dysku, jeśli aplikacja została zrestartowana
     if title:
         target_folder = os.path.join(DOWNLOAD_DIR, re.sub(r'[^a-zA-Z0-9]', '_', title))
-        game_files_dir = os.path.join(target_folder, "Game_Files")
-        
-        if os.path.exists(game_files_dir):
+        if os.path.exists(target_folder):
             setup_found = False
-            extract_path = game_files_dir
+            extract_path = target_folder
             
-            for root, dirs, files in os.walk(game_files_dir):
+            # Poszukiwanie wyekstrahowanego pliku setup.exe
+            for root, dirs, files in os.walk(target_folder):
                 for file in files:
                     if file.lower() == 'setup.exe':
                         setup_found = True
@@ -602,10 +379,16 @@ def dl_status():
                 if setup_found: break
             
             if setup_found:
+                # Odtworzenie stanu "Zakończono"
                 DOWNLOAD_TASKS[url] = {
-                    'status': 'finished', 'progress': 100, 'speed': '',
-                    'current_part': 0, 'total_parts': 0, 'extract_path': extract_path,
-                    'cancel_flag': False, 'pause_flag': False, 'method': ''
+                    'status': 'finished', 
+                    'progress': 100, 
+                    'speed': '',
+                    'current_part': 0, 
+                    'total_parts': 0, 
+                    'extract_path': extract_path,
+                    'cancel_flag': False, 
+                    'pause_flag': False
                 }
                 return jsonify(DOWNLOAD_TASKS[url])
 
@@ -618,6 +401,7 @@ def dl_install():
         extract_dir = DOWNLOAD_TASKS[url]['extract_path']
         setup_path = None
         
+        # Szukanie setup.exe w folderze
         for root, dirs, files in os.walk(extract_dir):
             for file in files:
                 if file.lower() == 'setup.exe':
@@ -627,26 +411,39 @@ def dl_install():
             
         if setup_path:
             try:
+                # FIX ŚCIEŻEK BEZWZGLĘDNYCH
+                # Obliczamy bezwzględną ścieżkę do pliku setup.exe, zapobiega to 
+                # dublowaniu się ścieżki przy argumentach "cwd" w podprocesach.
                 setup_path_abs = os.path.abspath(setup_path)
                 setup_dir_abs = os.path.dirname(setup_path_abs)
                 
+                # Automatyczna detekcja OS i wywołanie instalatora
                 if sys.platform == 'win32':
                     os.startfile(setup_path_abs)
                     return jsonify({"success": True, "msg": "Instalator uruchomiony (Windows)!"})
+                
                 elif sys.platform.startswith('linux'):
                     safe_path = shlex.quote(setup_path_abs)
                     wine_exec = shutil.which('wine') or shutil.which('wine64')
+                    
                     if wine_exec:
+                        # Jeśli poprawnie zlokalizowano polecenie wine w systemie
                         subprocess.Popen([wine_exec, setup_path_abs], cwd=setup_dir_abs)
                     else:
+                        # FALLBACK DLA LINUXA
+                        # Jeśli skrypt w środowisku Python nie widzi polecenia 'wine', wywołujemy
+                        # polecenie systemowe przez powłokę oraz jako ostateczność uruchamiamy 
+                        # plik .exe przy pomocy xdg-open z całkowicie absolutną ścieżką.
                         cmd = f'wine {safe_path} || xdg-open {safe_path}'
                         subprocess.Popen(cmd, shell=True, cwd=setup_dir_abs)
+                        
                     return jsonify({"success": True, "msg": "Zlecono uruchomienie instalatora (Linux)!"})
                 else:
                     return jsonify({"success": False, "msg": f"Nieobsługiwany system operacyjny: {sys.platform}"})
             except Exception as e:
                 return jsonify({"success": False, "msg": str(e)})
         
+        # Jeśli nie znaleziono setup.exe, otwórz sam folder ze ścieżką absolutną
         extract_dir_abs = os.path.abspath(extract_dir)
         if sys.platform == 'win32':
             os.startfile(extract_dir_abs)
@@ -701,37 +498,12 @@ HTML_TEMPLATE = """
         .progress-bar { background: linear-gradient(90deg, #00a2ff, #0055ff); transition: width 0.3s ease; font-weight: bold; }
         .btn-dl { background: linear-gradient(135deg, #22c55e, #16a34a); color: white; border: none; padding: 12px 30px; border-radius: 12px; font-weight: 800; font-size: 1.1rem; width: 100%; transition: 0.3s; }
         .btn-dl:hover { transform: scale(1.02); color: white; }
-        .btn-ctrl { background: #333; border: none; color: white; padding: 8px 20px; border-radius: 8px; font-weight: 600; margin-right: 10px; flex: 1; }
+        .btn-ctrl { background: #333; border: none; color: white; padding: 8px 20px; border-radius: 8px; font-weight: 600; margin-right: 10px; }
         .btn-ctrl:hover { background: #444; }
         .btn-danger { background: #ef4444; } .btn-danger:hover { background: #dc2626; }
         .btn-warning { background: #f59e0b; color: black; } .btn-warning:hover { background: #d97706; }
         .btn-install { background: #8b5cf6; border:none; padding: 12px 30px; border-radius: 12px; font-weight: 800; font-size: 1.1rem; width: 100%; color: white; }
         .btn-install:hover { background: #7c3aed; color:white;}
-        
-        /* COMMENTS STYLES */
-        .comment-box { background: #1a1a20; border-radius: 12px; border: 1px solid #333; padding: 15px; margin-bottom: 12px; font-size: 0.95rem; line-height: 1.5; color: #ced4da; }
-        .pinned-comment { border-color: #d32f2f; background: rgba(211, 47, 47, 0.05); }
-        .comment-reply { margin-top: 10px; padding-left: 15px; border-left: 3px solid #444; background: #111; padding: 10px; border-radius: 6px; font-size: 0.85rem; color: #aaa; }
-        .text-accent { color: var(--accent); }
-
-        /* --- RESPONSIVE MOBILE STYLES --- */
-        @media (max-width: 768px) {
-            .navbar .container { flex-wrap: wrap; gap: 10px; }
-            .navbar-brand { font-size: 1.4rem; flex: 1; }
-            .lang-switcher { flex: 0; white-space: nowrap; }
-            .search-box { order: 3; max-width: 100%; margin: 5px 0 0 0 !important; }
-            
-            .card-img-wrapper { height: 250px; }
-            .display-5 { font-size: 2rem; }
-            .desc-box { padding: 15px; font-size: 0.9rem; }
-            .info-row { padding: 10px 15px; }
-            
-            .btn-dl, .btn-install { font-size: 1rem; padding: 10px 20px; }
-            .dl-panel { padding: 15px; margin-top: 15px; }
-            .row.g-5 { --bs-gutter-y: 2rem; --bs-gutter-x: 1rem; }
-            
-            .comment-box { padding: 12px; font-size: 0.9rem; }
-        }
     </style>
 </head>
 <body>
@@ -739,8 +511,7 @@ HTML_TEMPLATE = """
 <nav class="navbar sticky-top">
     <div class="container d-flex justify-content-between align-items-center">
         <a class="navbar-brand" href="/">FIT<span class="brand-blue">DOWNLOADER</span></a>
-        <!-- Wyszukiwarka z dostosowanymi klasami margin dla responsywności -->
-        <form class="search-box mx-md-3 my-2 my-md-0" action="/search" method="get">
+        <form class="search-box mx-3" action="/search" method="get">
             <input class="search-input" type="search" name="q" placeholder="{{ labels.search_placeholder }}" required value="{{ query or '' }}">
             <button class="search-btn" type="submit">🔍</button>
         </form>
@@ -763,19 +534,14 @@ HTML_TEMPLATE = """
             <p class="mt-2 text-muted">{{ labels.loading }}</p>
         </div>
     {% elif game %}
-        <div class="mt-4 mt-md-5">
-            <!-- Dostosowane gap dla urządzeń mobilnych vs desktop -->
-            <div class="row g-4 g-lg-5">
+        <div class="mt-5">
+            <div class="row g-5">
                 <div class="col-lg-4">
-                    <img src="{{ game.image }}" class="w-100 rounded-4 shadow" alt="Poster" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki'">
+                    <img src="{{ game.image }}" class="w-100 rounded-4 shadow" alt="Poster" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'">
                     
                     <!-- DOWNLOADER PANEL -->
                     <div class="dl-panel shadow" id="dl-panel">
-                        {% if game.dl_method == 'none' %}
-                            <button class="btn-dl" id="btn-start" disabled style="background: #3f3f46; color: #a1a1aa; cursor: not-allowed;">🚫 {{ labels.btn_dl_unavailable }}</button>
-                        {% else %}
-                            <button class="btn-dl" id="btn-start" onclick="startDownload()">⬇ {{ labels.download_btn }}</button>
-                        {% endif %}
+                        <button class="btn-dl" id="btn-start" onclick="startDownload()">⬇ {{ labels.download_btn }}</button>
                         
                         <div id="dl-ui" style="display: none;">
                             <div class="d-flex justify-content-between align-items-end">
@@ -783,13 +549,13 @@ HTML_TEMPLATE = """
                                 <span id="dl-speed" class="text-muted small">0.0 MB/s</span>
                             </div>
                             
-                            <div class="progress" id="dl-progress-container">
+                            <div class="progress">
                                 <div id="dl-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
                             </div>
                             
-                            <div class="d-flex justify-content-between mt-3 gap-2" id="dl-controls">
-                                <button class="btn-ctrl btn-warning m-0" id="btn-pause" onclick="pauseDownload()">{{ labels.btn_pause }}</button>
-                                <button class="btn-ctrl btn-danger m-0" id="btn-stop" onclick="stopDownload()">{{ labels.btn_stop }}</button>
+                            <div class="d-flex justify-content-between mt-3" id="dl-controls">
+                                <button class="btn-ctrl btn-warning" id="btn-pause" onclick="pauseDownload()">{{ labels.btn_pause }}</button>
+                                <button class="btn-ctrl btn-danger" id="btn-stop" onclick="stopDownload()">{{ labels.btn_stop }}</button>
                             </div>
                             
                             <button class="btn-install mt-3" id="btn-install" style="display: none;" onclick="installGame()">🎮 {{ labels.btn_install }}</button>
@@ -803,12 +569,7 @@ HTML_TEMPLATE = """
                 </div>
                 
                 <div class="col-lg-8">
-                    <h1 class="display-5 fw-800 mb-1">{{ game.title }}</h1>
-                    {% if game.title_sub %}
-                    <h5 class="fw-bold mb-4" style="color: #d1d5db;">{{ game.title_sub }}</h5>
-                    {% else %}
-                    <div class="mb-4"></div>
-                    {% endif %}
+                    <h1 class="display-5 fw-800 mb-4">{{ game.title }}</h1>
                     <div class="row mb-4">
                         {% for item in game.info %}
                         <div class="col-md-6 mb-2">
@@ -818,31 +579,6 @@ HTML_TEMPLATE = """
                     </div>
                     <h5 class="brand-blue fw-bold mb-3">{{ labels.description }}</h5>
                     <div class="desc-box">{{ game.desc | safe }}</div>
-                    
-                    <!-- UPDATES (ADDITIONAL CONTENT) -->
-                    {% if game.updates %}
-                    <div class="mt-4">
-                        <button class="btn btn-outline-info w-100 text-start fw-bold p-3 rounded-3" onclick="toggleUpdates()">
-                            📦 {{ labels.updates_title }} ({{ game.updates|length }}) <span style="float:right;">▼</span>
-                        </button>
-                        <div id="updates-list" style="display: none;" class="mt-2 p-3 border border-secondary rounded-3" style="background: #111;">
-                            <ul class="list-unstyled mb-0">
-                                {% for upd in game.updates %}
-                                <li class="mb-2"><a href="{{ upd.url }}" target="_blank" class="text-info text-decoration-none fw-bold" style="word-break: break-all;">⯈ {{ upd.name }}</a></li>
-                                {% endfor %}
-                            </ul>
-                        </div>
-                    </div>
-                    {% endif %}
-                    
-                    <!-- COMMENTS SECTION -->
-                    <div class="mt-5 pt-3 border-top border-secondary">
-                        <h5 class="brand-blue fw-bold mb-3">💬 {{ labels.comments_title }}</h5>
-                        <div id="pinned-comments-container"></div>
-                        <div id="standard-comments-container" style="display: none;" class="mb-3"></div>
-                        <button id="btn-load-comments" class="btn btn-outline-light w-100 fw-bold py-2 rounded-3" onclick="handleCommentsClick()">{{ labels.load_comments }}</button>
-                    </div>
-                    
                 </div>
             </div>
         </div>
@@ -859,30 +595,18 @@ HTML_TEMPLATE = """
         try {
             const res = await fetch(`/api/game_preview?url=${encodeURIComponent(item.url)}`);
             const data = await res.json();
-            const imgSrc = (data && data.image) ? data.image : 'https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki';
-            
-            const card = document.createElement('div');
-            card.className = 'game-card';
-            card.innerHTML = `
-                <div class="card-img-wrapper"><img src="${imgSrc}" class="card-img" alt="Okładka" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'"></div>
-                <div class="card-content">
-                    <h5 class="card-title">${item.title}</h5>
-                    <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
-                </div>`;
-            container.appendChild(card);
-        } catch (e) { 
-            console.error(e); 
-            // Fallback renderowania w razie zablokowania pobierania obrazka okładki
-            const card = document.createElement('div');
-            card.className = 'game-card';
-            card.innerHTML = `
-                <div class="card-img-wrapper"><img src="https://placehold.co/300x450/111111/FFFFFF/png?text=Brak+Okładki" class="card-img" alt="Okładka"></div>
-                <div class="card-content">
-                    <h5 class="card-title">${item.title}</h5>
-                    <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
-                </div>`;
-            container.appendChild(card);
-        }
+            if (data && data.image) {
+                const card = document.createElement('div');
+                card.className = 'game-card';
+                card.innerHTML = `
+                    <div class="card-img-wrapper"><img src="${data.image}" class="card-img" alt="Okładka" onerror="this.src='https://placehold.co/300x450/111111/FFFFFF/png?text=Błąd'"></div>
+                    <div class="card-content">
+                        <h5 class="card-title">${item.title}</h5>
+                        <a href="/details?url=${encodeURIComponent(item.url)}" class="btn-view">{{ labels.details_btn }}</a>
+                    </div>`;
+                container.appendChild(card);
+            }
+        } catch (e) { console.error(e); }
     }
 
     async function init() {
@@ -903,153 +627,29 @@ HTML_TEMPLATE = """
     init();
 
     {% else %}
-    /* --- Details Page Logic --- */
+    /* --- Downloader Logic for Details Page --- */
     const GAME_URL = "{{ game.url }}";
     const GAME_TITLE = "{{ game.title }}";
     
-    // Updates Toggle
-    function toggleUpdates() {
-        const list = document.getElementById('updates-list');
-        list.style.display = list.style.display === 'none' ? 'block' : 'none';
-    }
-    
-    // Comments Logic
-    let commentsPage = null;
-    let commentsLoading = false;
-    let standardCommentsVisible = false;
-
-    async function initComments() {
-        try {
-            const res = await fetch(`/api/comments?url=${encodeURIComponent(GAME_URL)}`);
-            const data = await res.json();
-            const pinnedContainer = document.getElementById('pinned-comments-container');
-            const stdContainer = document.getElementById('standard-comments-container');
-            
-            if (data.comments && data.comments.length > 0) {
-                data.comments.forEach(c => {
-                    let div = document.createElement('div');
-                    div.className = c.is_pinned ? 'comment-box pinned-comment' : 'comment-box';
-                    
-                    let replyHtml = '';
-                    if (c.reply) {
-                        replyHtml = `<div class="comment-reply"><strong class="text-light">${c.reply.user}:</strong> ${c.reply.text}</div>`;
-                    }
-                    
-                    div.innerHTML = `
-                        <div class="d-flex justify-content-between mb-2">
-                            <strong class="${c.is_pinned ? 'text-danger' : 'text-accent'}">${c.user}</strong>
-                            <small class="text-muted">${c.date}</small>
-                        </div>
-                        <div class="comment-text">${c.text}</div>
-                        ${replyHtml}
-                    `;
-                    
-                    if (c.is_pinned) {
-                        pinnedContainer.appendChild(div);
-                    } else {
-                        stdContainer.appendChild(div);
-                    }
-                });
-                
-                if (data.next_page) {
-                    commentsPage = data.next_page;
-                } else {
-                    document.getElementById('btn-load-comments').style.display = 'none';
-                }
-            } else {
-                document.getElementById('btn-load-comments').style.display = 'none';
-                pinnedContainer.innerHTML = "<p class='text-muted'>Brak komentarzy na stronie gry.</p>";
-            }
-        } catch (e) {
-            console.error(e);
-        }
-    }
-    
-    initComments();
-
-    async function handleCommentsClick() {
-        const stdContainer = document.getElementById('standard-comments-container');
-        const btn = document.getElementById('btn-load-comments');
-        
-        if (!standardCommentsVisible) {
-            stdContainer.style.display = 'block';
-            standardCommentsVisible = true;
-            if (commentsPage) {
-                btn.innerText = "{{ labels.load_more }}";
-            } else {
-                btn.style.display = 'none';
-            }
-            return;
-        }
-        
-        if (commentsLoading || !commentsPage) return;
-        commentsLoading = true;
-        btn.innerText = "{{ labels.loading }}";
-        
-        try {
-            const res = await fetch(`/api/comments?url=${encodeURIComponent(GAME_URL)}&page=${commentsPage}`);
-            const data = await res.json();
-            
-            if (data.comments && data.comments.length > 0) {
-                data.comments.forEach(c => {
-                    let div = document.createElement('div');
-                    div.className = 'comment-box';
-                    
-                    let replyHtml = '';
-                    if (c.reply) {
-                        replyHtml = `<div class="comment-reply"><strong class="text-light">${c.reply.user}:</strong> ${c.reply.text}</div>`;
-                    }
-                    
-                    div.innerHTML = `
-                        <div class="d-flex justify-content-between mb-2">
-                            <strong class="text-accent">${c.user}</strong>
-                            <small class="text-muted">${c.date}</small>
-                        </div>
-                        <div class="comment-text">${c.text}</div>
-                        ${replyHtml}
-                    `;
-                    stdContainer.appendChild(div);
-                });
-                
-                if (data.next_page) {
-                    commentsPage = data.next_page;
-                    btn.innerText = "{{ labels.load_more }}";
-                } else {
-                    btn.style.display = 'none';
-                }
-            } else {
-                btn.style.display = 'none';
-            }
-        } catch (e) {
-            console.error(e);
-            btn.innerText = "Błąd pobierania";
-        }
-        commentsLoading = false;
-    }
-
-    // Downloader Logic
     const uiBtnStart = document.getElementById('btn-start');
     const uiPanel = document.getElementById('dl-ui');
     const uiStatusText = document.getElementById('dl-status-text');
     const uiSpeed = document.getElementById('dl-speed');
     const uiBar = document.getElementById('dl-bar');
     const uiBtnPause = document.getElementById('btn-pause');
-    const uiBtnStop = document.getElementById('btn-stop');
     const uiBtnInstall = document.getElementById('btn-install');
     const uiControls = document.getElementById('dl-controls');
-    const uiProgressContainer = document.getElementById('dl-progress-container');
+    
     let dlInterval;
 
     function startDownload() {
         fetch('/api/dl/start', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({url: GAME_URL, title: GAME_TITLE, image: "{{ game.image }}"})
+            body: JSON.stringify({url: GAME_URL, title: GAME_TITLE})
         }).then(() => {
-            if(uiBtnStart) uiBtnStart.style.display = 'none';
+            uiBtnStart.style.display = 'none';
             uiPanel.style.display = 'block';
             uiControls.style.display = 'flex';
-            uiBtnPause.style.display = 'block';
-            uiBtnStop.style.display = 'block';
             uiBtnInstall.style.display = 'none';
             dlInterval = setInterval(pollStatus, 1000);
         });
@@ -1086,14 +686,14 @@ HTML_TEMPLATE = """
         .then(data => {
             if (data.status === 'none' || !data.status) return;
 
-            if (data.status !== 'canceled' && data.status !== 'error' && data.status !== 'finished') {
-                if(uiBtnStart) uiBtnStart.style.display = 'none';
+            // Pokaż UI pobierania jeśli gra posiada jakikolwiek aktywny/skończony status
+            if (data.status !== 'canceled' && data.status !== 'error') {
+                uiBtnStart.style.display = 'none';
                 uiPanel.style.display = 'block';
                 uiControls.style.display = 'flex';
-                uiBtnPause.style.display = 'block';
-                uiBtnStop.style.display = 'block';
             }
 
+            // UI Update
             if (data.status === 'searching') uiStatusText.innerText = "{{ labels.dl_searching }}";
             if (data.status === 'extracting') uiStatusText.innerText = "{{ labels.dl_extracting }}";
             if (data.status === 'paused') {
@@ -1108,11 +708,7 @@ HTML_TEMPLATE = """
             }
             
             if (data.status === 'downloading') {
-                if (data.method === 'torrent') {
-                    uiStatusText.innerText = "{{ labels.dl_method_torrent }}";
-                } else {
-                    uiStatusText.innerText = `{{ labels.dl_part }} ${data.current_part}/${data.total_parts}`;
-                }
+                uiStatusText.innerText = `{{ labels.dl_part }} ${data.current_part}/${data.total_parts}`;
             }
 
             uiSpeed.innerText = data.speed;
@@ -1123,34 +719,26 @@ HTML_TEMPLATE = """
                 clearInterval(dlInterval);
                 uiStatusText.innerText = "{{ labels.dl_finished }}";
                 uiSpeed.innerText = "";
-                if (uiProgressContainer) uiProgressContainer.style.display = 'none';
-                
+                uiBar.classList.remove('progress-bar-animated', 'progress-bar-striped');
+                uiBar.classList.add('bg-success');
                 uiControls.style.display = 'none';
-                uiBtnPause.style.display = 'none';
-                uiBtnStop.style.display = 'none';
-                
                 uiBtnInstall.style.display = 'block';
-                if(uiBtnStart) uiBtnStart.style.display = 'none';
+                // Wymuś ukrycie start i pokazanie panelu na wypadek initial load
+                uiBtnStart.style.display = 'none';
                 uiPanel.style.display = 'block';
-            } else {
-                if (uiProgressContainer) uiProgressContainer.style.display = '';
             }
 
             if (data.status === 'canceled' || data.status === 'error') {
                 clearInterval(dlInterval);
                 uiStatusText.innerText = data.status === 'canceled' ? "Anulowano" : "{{ labels.dl_error }}";
                 uiControls.style.display = 'none';
-                uiBtnPause.style.display = 'none';
-                uiBtnStop.style.display = 'none';
-                
-                if(uiBtnStart) {
-                    uiBtnStart.style.display = 'block';
-                    uiBtnStart.innerText = "Wznów Pobieranie";
-                }
+                uiBtnStart.style.display = 'block';
+                uiBtnStart.innerText = "Wznów Pobieranie";
             }
         });
     }
     
+    // Auto-check status on load
     pollStatus();
     dlInterval = setInterval(pollStatus, 1500);
     {% endif %}
