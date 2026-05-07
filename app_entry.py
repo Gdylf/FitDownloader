@@ -1,4 +1,4 @@
- import sys, os, threading, webbrowser, time
+import sys, os, threading, webbrowser, time
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
