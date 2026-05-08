@@ -154,6 +154,14 @@ def download_via_torrent(task, torrent_url, target_folder):
         task['speed'] = 'Brak biblioteki libtorrent! Zainstaluj: pip install libtorrent'
         return False
 
+    # Sprawdź czy kluczowe atrybuty są faktycznie callable (niekompletne instalacje zwracają None)
+    for required in ['session', 'torrent_info']:
+        obj = getattr(lt, required, None)
+        if obj is None or not callable(obj):
+            task['status'] = 'error'
+            task['speed'] = f'Niepełna instalacja libtorrent – brak lt.{required}. Zainstaluj ponownie.'
+            return False
+
     task['status'] = 'torrent_downloading'
     task['speed'] = 'Pobieranie pliku .torrent...'
 
@@ -169,34 +177,56 @@ def download_via_torrent(task, torrent_url, target_folder):
         game_files_dir = os.path.join(target_folder, "Game_Files")
         os.makedirs(game_files_dir, exist_ok=True)
 
-        # Sesja libtorrent – kompatybilna z v1.x i v2.x
+        # Sesja – minimalna inicjalizacja bez żadnych opcji (najszersza kompatybilność)
         ses = lt.session()
-        try:
-            # libtorrent 2.x
-            settings = lt.default_settings()
-            settings['listen_interfaces'] = '0.0.0.0:6881'
-            ses.apply_settings(settings)
-        except Exception:
-            # libtorrent 1.x fallback
-            try:
-                ses.listen_on(6881, 6891)
-            except Exception:
-                pass
 
-        # Tworzenie parametrów torrenta – bez storage_mode_t (crashuje na nowszych)
+        # Opcjonalne ustawienie portu – ignoruj błąd jeśli metoda nie istnieje
         try:
-            atp = lt.add_torrent_params()
-            atp.ti = lt.torrent_info(torrent_file_path)
-            atp.save_path = game_files_dir
-            handle = ses.add_torrent(atp)
+            if callable(getattr(ses, 'listen_on', None)):
+                ses.listen_on(6881, 6891)
+            elif callable(getattr(ses, 'apply_settings', None)):
+                ses.apply_settings({'listen_interfaces': '0.0.0.0:6881'})
         except Exception:
-            # Starszy interfejs dict-based jako fallback
-            info = lt.torrent_info(torrent_file_path)
+            pass  # Port nie jest krytyczny
+
+        # Wczytaj torrent info
+        info = lt.torrent_info(torrent_file_path)
+
+        # Dodaj torrent – próbuj add_torrent_params, fallback na dict
+        handle = None
+        if callable(getattr(lt, 'add_torrent_params', None)):
+            try:
+                atp = lt.add_torrent_params()
+                atp.ti = info
+                atp.save_path = game_files_dir
+                handle = ses.add_torrent(atp)
+            except Exception:
+                handle = None
+
+        if handle is None:
+            # Fallback: stary interfejs dict-based
             handle = ses.add_torrent({'ti': info, 'save_path': game_files_dir})
 
-        while not handle.status().is_seeding:
+        # Pętla pobierania
+        while True:
+            s = handle.status()
+
+            # Sprawdź is_seeding przez atrybut lub przez state
+            is_done = False
+            if hasattr(s, 'is_seeding'):
+                is_done = s.is_seeding
+            elif hasattr(s, 'state'):
+                # state 5 = seeding w lt enum
+                is_done = int(s.state) >= 5
+
+            if is_done:
+                break
+
             if task['cancel_flag']:
-                ses.remove_torrent(handle)
+                try:
+                    ses.remove_torrent(handle)
+                except Exception:
+                    pass
                 return False
 
             while task['pause_flag']:
@@ -204,14 +234,21 @@ def download_via_torrent(task, torrent_url, target_folder):
                 task['speed'] = '0.0 MB/s'
                 time.sleep(1)
                 if task['cancel_flag']:
-                    ses.remove_torrent(handle)
+                    try:
+                        ses.remove_torrent(handle)
+                    except Exception:
+                        pass
                     return False
 
-            s = handle.status()
             task['status'] = 'torrent_downloading'
-            task['progress'] = int(s.progress * 100)
-            dl_rate = s.download_rate if s.download_rate else 0
-            task['speed'] = f"{dl_rate / (1024 * 1024):.1f} MB/s"
+            try:
+                progress = int(s.progress * 100)
+                dl_rate = getattr(s, 'download_rate', 0) or 0
+                task['progress'] = progress
+                task['speed'] = f"{dl_rate / (1024 * 1024):.1f} MB/s"
+            except Exception:
+                pass
+
             time.sleep(1)
 
         task['extract_path'] = game_files_dir
