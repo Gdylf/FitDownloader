@@ -29,7 +29,7 @@ jobs:
           pip install libtorrent-windows-dll
 
       - name: Verify libtorrent
-        run: python -c "import libtorrent_windows_dll; import libtorrent; print('libtorrent OK:', libtorrent.version)"
+        run: python -c "import libtorrent; print('libtorrent OK:', libtorrent.version)"
 
       - name: Build EXE
         shell: pwsh
@@ -55,7 +55,6 @@ jobs:
             --hidden-import bs4.builder `
             --hidden-import rarfile `
             --collect-all libtorrent `
-            --collect-all libtorrent_windows_dll `
             --hidden-import threading `
             --hidden-import webbrowser `
             --name FitDownloader `
