@@ -13,11 +13,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.14
+      - name: Setup Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
-          allow-prereleases: true
+          python-version: "3.12"
 
       - name: Install dependencies
         run: |
@@ -25,9 +24,10 @@ jobs:
           pip install flask httpx requests beautifulsoup4 rarfile pyinstaller
 
       - name: Install libtorrent
-        run: |
-          pip install libtorrent
-        continue-on-error: true
+        run: pip install libtorrent
+
+      - name: Verify libtorrent
+        run: python -c "import libtorrent; print('libtorrent OK:', libtorrent.version)"
 
       - name: Build EXE
         run: |
