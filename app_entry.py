@@ -1,15 +1,4 @@
-import sys, os, threading, webbrowser, time, types
-
-# Jeśli libtorrent nie jest zainstalowany, wstrzyknij pusty mock
-# żeby app.py nie crashował przy imporcie
-try:
-    import libtorrent
-except ImportError:
-    mock = types.ModuleType('libtorrent')
-    mock.session = None
-    mock.torrent_info = None
-    mock.storage_mode_t = None
-    sys.modules['libtorrent'] = mock
+import sys, os, threading, webbrowser, time
 
 if getattr(sys, 'frozen', False):
     BASE_DIR = os.path.dirname(sys.executable)
